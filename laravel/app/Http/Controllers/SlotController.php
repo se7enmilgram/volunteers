@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use Mail;
 use Illuminate\Http\Request;
 use App\Http\Requests;
 use App\Http\Controllers\Controller;
@@ -10,6 +11,7 @@ use App\Http\Requests\SlotEditRequest;
 use App\Models\Slot;
 use App\Models\User;
 use App\Models\UserRole;
+use App\Helpers;
 
 use Illuminate\Support\Facades\Auth;
 
@@ -102,7 +104,7 @@ class SlotController extends Controller
             $slot->user_id = Auth::user()->id;
             $slot->save();
 
-            event(new SlotChanged($slot, ['status' => 'taken', 'name' => Auth::user()->name]));
+            event(new SlotChanged($slot, ['status' => 'taken', 'name' => Auth::user()->name, 'email' => Auth::user()->email]));
             $request->session()->flash('success', 'You signed up for a volunteer shift.');
 
             // If a password was used
@@ -130,31 +132,23 @@ class SlotController extends Controller
     // Remove yourself from a slot
     public function release(Request $request, Slot $slot)
     {
-
-        if(!$this->userAllowed($slot))
+        if($this->eventHasPassed($slot))
         {
-            $request->session()->flash('error', 'This shift is only available to certain user groups, your account must be approved by an administrator before signing up.');
+            $request->session()->flash('error', 'This event has already passed, you are no longer able to make changes to your shifts.');
         }
         else
         {
-            if($this->eventHasPassed($slot))
+            if(!is_null($slot->user) && $slot->user->id === Auth::user()->id)
             {
-                $request->session()->flash('error', 'This event has already passed, you are no longer able to sign up for shifts.');
+                $slot->user_id = null;
+                $slot->save();
+
+                event(new SlotChanged($slot, ['status' => 'released']));
+                $request->session()->flash('success', 'You are no longer volunteering for your shift.');
             }
             else
             {
-                if(!is_null($slot->user) && $slot->user->id === Auth::user()->id)
-                {
-                    $slot->user_id = null;
-                    $slot->save();
-
-                    event(new SlotChanged($slot, ['status' => 'released']));
-                    $request->session()->flash('success', 'You are no longer volunteering for your shift.');
-                }
-                else
-                {
-                    $request->session()->flash('error', 'You are not currently scheduled to volunteer for this shift.');
-                }
+                $request->session()->flash('error', 'You are not currently scheduled to volunteer for this shift.');
             }
         }
 
@@ -173,13 +167,11 @@ class SlotController extends Controller
     {
         if(!is_null($slot->user))
         {
-            // TODO: Refactor this into a helper function
-            $username = $slot->user->data()->exists() && $slot->user->data->burner_name ?
-                $slot->user->data->burner_name : $slot->user->name;
+            $username = Helpers::displayName($slot->user);
 
             $slot->user_id = null;
             $slot->save();
-            event(new SlotChanged($slot, ['status' => 'released']));
+            event(new SlotChanged($slot, ['status' => 'released', 'admin_released' => true]));
             $request->session()->flash('success', $username.' is removed!!');
         }
         else
@@ -195,13 +187,11 @@ class SlotController extends Controller
 
         if(is_null($slot->user))
         {
-            // TODO: Refactor this into a helper function
-            $username = $user->data()->exists() && $user->data->burner_name ?
-                $user->data->burner_name : $user->name;
+            $username = Helpers::displayName($user);
 
-            $slot->user_id=$user->data->user_id;
+            $slot->user_id=$user->id;
             $slot->save();
-            event(new SlotChanged($slot, ['status' => 'taken']));
+            event(new SlotChanged($slot, ['status' => 'taken', 'admin_assigned' => true, 'name' => $user->name, 'email' => $user->email]));
             $request->session()->flash('success', 'You added '.$username.' to this shift');
         }
         return redirect('/event/'.$slot->event->id);
